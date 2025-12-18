@@ -17,8 +17,16 @@ def pickle_examples(paths, train_path, val_path, train_val_split=0.1):
     with open(train_path, 'wb') as ft:
         with open(val_path, 'wb') as fv:
             for p in paths:
-                cns_code = os.path.basename(p).split("_")[0]
-                label = int(os.path.basename(p).split("_")[1])
+                base = os.path.splitext(os.path.basename(p))[0]  # 去掉 .jpg
+                parts = base.split("_")
+                if len(parts) >= 2:
+                    cns_code = parts[0]
+                    label = int(parts[1])
+                else:
+                    # 兼容 "0001.jpg"：用编号当 cns_code，label 默认 0
+                    cns_code = parts[0]
+                    label = 0
+
                 with open(p, 'rb') as f:
                     if cns_code == 'None':
                         print("None alert! ")
@@ -43,6 +51,12 @@ args = parser.parse_args()
 if __name__ == "__main__":
     train_path = os.path.join(args.save_dir, "cns_train.obj")
     val_path = os.path.join(args.save_dir, "cns_test.obj")
-    pickle_examples(sorted(glob.glob(os.path.join(args.dir, "*.jpg"))), train_path=train_path, val_path=val_path,
+    # 查找所有子目录中的.jpg文件
+    all_image_paths = []
+    for root, dirs, files in os.walk(args.dir):
+        for file in files:
+            if file.endswith(".jpg"):
+                all_image_paths.append(os.path.join(root, file))
+    pickle_examples(sorted(all_image_paths), train_path=train_path, val_path=val_path,
                     train_val_split=args.split_ratio)
 

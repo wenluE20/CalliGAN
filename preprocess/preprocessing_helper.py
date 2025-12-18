@@ -4,10 +4,20 @@
 import os
 import pdb
 
+import sys
+from pathlib import Path
+
 import PIL
 import numpy as np
 from PIL import Image, ImageFont
 from PIL import ImageDraw
+
+CURRENT_DIR = Path(__file__).resolve()
+REPO_ROOT = CURRENT_DIR.parent.parent
+
+# Ensure repository-root imports (e.g., models) resolve when run directly
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from models.utils import save_concat_images
 
@@ -26,7 +36,15 @@ def _draw_single_char(font, ch, width, height):
 def get_textsize(font, ch):
     img = Image.new("L", (1, 1), 255)
     draw = ImageDraw.Draw(img)
-    char_size = draw.textsize(ch, font=font)
+    # 使用新的textbbox方法替代已弃用的textsize
+    # textbbox返回(x0, y0, x1, y1)坐标
+    try:
+        # 尝试使用textbbox（新版Pillow）
+        bbox = draw.textbbox((0, 0), ch, font=font)
+        char_size = (bbox[2] - bbox[0], bbox[3] - bbox[1])
+    except AttributeError:
+        # 回退到textsize（旧版Pillow）
+        char_size = draw.textsize(ch, font=font)
     return char_size
 
 

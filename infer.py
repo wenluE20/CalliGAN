@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 from __future__ import absolute_import
-import models.parser
-import tensorflow as tf
+from models import parser
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 from models.unet_onehot_cns_font_attention import UNet
 
 

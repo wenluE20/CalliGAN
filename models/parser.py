@@ -54,7 +54,7 @@ def arg_parse():
     # args for style classifier
     parser.add_argument('--style_classifier_dir', dest='style_classifier_dir', default='../experiment_style_classifier/checkpoint/experiment_0_batch_32',
                         help='directory that saves the style classifier checkpoint')
-    parser.add_argument('--cns_encoder_dir', dest='cns_encoder_dir', default='/2t_2/jeanwu/calligraphy/zi2zi/experiment_multiple/checkpoint/experiment_21_batch_16',
+    parser.add_argument('--cns_encoder_dir', dest='cns_encoder_dir', default='',
                         help='directory that saves the cns encoder checkpoint')
 
     # args for cns encoder

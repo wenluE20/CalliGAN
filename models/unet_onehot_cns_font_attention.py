@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 from __future__ import absolute_import
+from PIL import Image
 
-import tensorflow as tf  # pyright: ignore[reportMissingImports]
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+
 import numpy as np
 import scipy.misc as misc
 import os
 import time
 from collections import namedtuple
-from ops import conv2d, deconv2d, lrelu, fc, batch_norm, init_embedding, conditional_instance_norm, conv2d_sn
-from dataset_cns import TrainDataProvider, InjectDataProvider
-from utils import scale_back, merge, save_concat_images
-from transformer_modules import get_token_embeddings, ff, positional_encoding, multihead_attention
+from .ops import conv2d, deconv2d, lrelu, fc, batch_norm, init_embedding, conditional_instance_norm, conv2d_sn
+from .dataset_cns import TrainDataProvider, InjectDataProvider
+from .utils import scale_back, merge, save_concat_images
+from .transformer_modules import get_token_embeddings, ff, positional_encoding, multihead_attention, dropout
 
 # Auxiliary wrapper classes
 # Used to save handles(important nodes in computation graph) for later evaluation
@@ -152,7 +155,7 @@ class UNet(object):
             enc *= self.cns_embedding_size**0.5  # scale
 
             enc += positional_encoding(enc, self.font_len)
-            enc = tf.layers.dropout(enc, 0.3, training=True)
+            enc = dropout(enc, 0.3, True, name="cns_dropout")
 
             # Blocks
             for i in range(self.num_blocks):
@@ -179,9 +182,8 @@ class UNet(object):
                                  shape=[self.batch_size, 1, 1, self.embedding_num])
 
         # encoder_state = self.cns_encoder(cns_code, seq_len, reuse=reuse)
-        z = self.cns_encoder(cns_code, seq_len, reuse=reuse)
-        encoder_state = tf.reshape(z, [self.batch_size, 1, 1, self.cns_embedding_size * self.font_len])
-        embedded = tf.concat([e8, one_hot, encoder_state], 3)
+        embedded = tf.concat([e8, one_hot], 3)
+
         output = self.decoder(embedded, enc_layers, embedding_ids, inst_norm, is_training=is_training, reuse=reuse)
         return output, e8
 
@@ -406,10 +408,12 @@ class UNet(object):
     def restore_cns_encoder(self, model_dir):
         all_vars = tf.global_variables()
         cns_vars = [var for var in all_vars if "cns_encoder" in var.name]
+        if not cns_vars:
+            print("[INFO] no cns_encoder variables found, skip restore_cns_encoder")
+            return
+
         saver = tf.train.Saver(cns_vars)
-
         ckpt = tf.train.get_checkpoint_state(model_dir)
-
         if ckpt:
             saver.restore(self.sess, ckpt.model_checkpoint_path)
             print("restored cns encoder %s" % model_dir)
@@ -496,7 +500,18 @@ class UNet(object):
         for cns_code, seq_len, labels, source_imgs in source_iter:
             fake_imgs = self.generate_fake_samples(source_imgs, labels, cns_code, seq_len)[0]
             img_path = os.path.join(save_dir, "inferred_%04d.jpg" % count)
-            misc.imsave(img_path, fake_imgs.squeeze())
+
+            img = fake_imgs.squeeze()
+
+            # 如果输出是 float，需要转成 uint8
+            if img.dtype != np.uint8:
+                # 常见情况：[-1, 1] 或 [0, 1]
+                if img.max() <= 1.0:
+                    img = img * 255.0
+                img = img.clip(0, 255).astype(np.uint8)
+
+            Image.fromarray(img).save(img_path)
+
             count += 1
         '''
         for labels, source_imgs in source_iter:
@@ -639,6 +654,28 @@ class UNet(object):
             for bid, batch in enumerate(train_batch_iter):
                 counter += 1
                 cns, sequence_len, labels, batch_images = batch
+                #os.makedirs("prepared_data/debug_provider", exist_ok=True)
+
+            # real_A_and_B_images 是模型图里的输入张量名（你的报错里就叫这个）
+                #x = batch_images  # 这个变量名按你代码里实际的来，形状应为 (N,256,256,2)
+                    # 如果 x 是 (N, 256, 256, 2)，通道0/1分别是A/B 
+                #a = x[0, :, :, 0]
+                #b = x[0, :, :, 1]
+
+                #def to_uint8(img):
+                    #img = img.astype(np.float32)
+                        # 常见归一化：[-1,1] 或 [0,1]
+                    #if img.min() < 0:
+                        #img = (img + 1.0) * 127.5
+                    #else:
+                    #    img = img * 255.0
+                    #return np.clip(img, 0, 255).astype(np.uint8)
+
+                #Image.fromarray(to_uint8(a)).save("prepared_data/debug_provider/A.jpg")
+                #Image.fromarray(to_uint8(b)).save("prepared_data/debug_provider/B.jpg")
+                #print("Saved A/B to prepared_data/debug_provider/A.jpg and B.jpg")
+                #return
+
                 shuffled_ids = labels[:]
                 if flip_labels:
                     np.random.shuffle(shuffled_ids)

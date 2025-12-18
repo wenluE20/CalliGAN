@@ -3,7 +3,9 @@ from __future__ import print_function
 from __future__ import absolute_import
 
 import numpy as np
-import tensorflow as tf  # pyright: ignore[reportMissingImports]
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+
 
 def ln(inputs, epsilon = 1e-8, scope="ln"):
     '''Applies layer normalization. See https://arxiv.org/abs/1607.06450.
@@ -26,6 +28,45 @@ def ln(inputs, epsilon = 1e-8, scope="ln"):
 
     return outputs
 
+def dense(inputs, units, use_bias=True, activation=None, scope="dense"):
+    """
+    代替 tf.layers.dense 的实现：
+    - 输入: 任意 rank>=2，最后一维是通道 C
+    - 输出: 最后一维变成 units，其它维度保持不变
+    """
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        input_dim = inputs.get_shape().as_list()[-1]
+        # Glorot/Xavier uniform，等价于 tf.layers.dense 默认初始化
+        w = tf.get_variable(
+            "kernel",
+            shape=[input_dim, units],
+            initializer=tf.glorot_uniform_initializer(),
+        )
+
+        # 展平成二维再做 matmul
+        flat_inputs = tf.reshape(inputs, [-1, input_dim])          # (?, C)
+        flat_outputs = tf.matmul(flat_inputs, w)                   # (?, units)
+
+        if use_bias:
+            b = tf.get_variable(
+                "bias",
+                shape=[units],
+                initializer=tf.zeros_initializer(),
+            )
+            flat_outputs = tf.nn.bias_add(flat_outputs, b)
+
+        # 还原成原来的 batch/time 维度 + 新通道
+        out_shape = tf.concat(
+            [tf.shape(inputs)[:-1], tf.constant([units], dtype=tf.int32)],
+            axis=0,
+        )
+        outputs = tf.reshape(flat_outputs, out_shape)
+
+        if activation is not None:
+            outputs = activation(outputs)
+
+        return outputs
+
 def get_token_embeddings(vocab_size, num_units, zero_pad=True):
     '''Constructs token embedding matrix.
     Note that the column of index 0's are set to zeros.
@@ -36,11 +77,14 @@ def get_token_embeddings(vocab_size, num_units, zero_pad=True):
     Returns
     weight variable: (V, E)
     '''
-    with tf.variable_scope("shared_weight_matrix"):
-        embeddings = tf.get_variable('weight_mat',
-                                   dtype=tf.float32,
-                                   shape=(vocab_size, num_units),
-                                   initializer=tf.contrib.layers.xavier_initializer())
+
+    with tf.variable_scope("shared_weight_matrix", reuse=tf.AUTO_REUSE):
+        embeddings = tf.get_variable(
+            "weight_mat",
+            dtype=tf.float32,
+            shape=(vocab_size, num_units),
+            initializer=tf.keras.initializers.glorot_uniform(),
+        )
         if zero_pad:
             embeddings = tf.concat((tf.zeros(shape=[1, num_units]),
                                     embeddings[1:, :]), 0)
@@ -81,16 +125,46 @@ def scaled_dot_product_attention(Q, K, V, key_masks,
         attention = tf.transpose(outputs, [0, 2, 1])
         tf.summary.image("attention", tf.expand_dims(attention[:1], -1))
 
-        # # query masking
-        # outputs = mask(outputs, Q, K, type="query")
-
+        # dropout 这里改一下：
         # dropout
-        outputs = tf.layers.dropout(outputs, rate=dropout_rate, training=training)
+        outputs = dropout(
+            outputs,
+            rate=dropout_rate,
+            training=training,
+            name=scope + "_dropout",
+        )
+
 
         # weighted sum (context vectors)
         outputs = tf.matmul(outputs, V)  # (N, T_q, d_v)
 
     return outputs
+
+
+def dropout(x, rate, training, name="dropout"):
+    """
+    代替 tf.layers.dropout(x, rate=rate, training=training)
+    - rate: 丢弃比例（和 tf.layers.dropout 一样）
+    - training: True/False 或 tf.bool 的张量
+    """
+    keep_prob = 1.0 - rate
+
+    def train_fn():
+        return tf.nn.dropout(x, keep_prob)
+
+    def infer_fn():
+        return x
+
+    with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
+        # 兼容 Python bool
+        if isinstance(training, bool):
+            return train_fn() if training else infer_fn()
+
+        # 兼容图里的 bool 张量
+        pred = training
+        if pred.dtype is not tf.bool:
+            pred = tf.cast(pred, tf.bool)
+        return tf.cond(pred, train_fn, infer_fn)
 
 
 def mask(inputs, key_masks=None, type=None):
@@ -114,7 +188,7 @@ def mask(inputs, key_masks=None, type=None):
     """
     padding_num = -2 ** 32 + 1
     if type in ("k", "key", "keys"):
-        key_masks = tf.to_float(key_masks)
+        key_masks = tf.cast(key_masks, tf.float32)
         key_masks = tf.tile(key_masks, [tf.shape(inputs)[0] // tf.shape(key_masks)[0], 1]) # (h*N, seqlen)
         key_masks = tf.expand_dims(key_masks, 1)  # (h*N, 1, seqlen)
         outputs = inputs + key_masks * padding_num
@@ -161,10 +235,10 @@ def multihead_attention(queries, keys, values, key_masks,
     '''
     d_model = queries.get_shape().as_list()[-1]
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        # Linear projections
-        Q = tf.layers.dense(queries, d_model, use_bias=True) # (N, T_q, d_model)
-        K = tf.layers.dense(keys, d_model, use_bias=True) # (N, T_k, d_model)
-        V = tf.layers.dense(values, d_model, use_bias=True) # (N, T_k, d_model)
+    # Linear projections
+        Q = dense(queries, d_model, use_bias=True, activation=None, scope="Q_dense")
+        K = dense(keys,    d_model, use_bias=True, activation=None, scope="K_dense")
+        V = dense(values,  d_model, use_bias=True, activation=None, scope="V_dense")
 
         # Split and concat
         Q_ = tf.concat(tf.split(Q, num_heads, axis=2), axis=0) # (h*N, T_q, d_model/h)
@@ -186,28 +260,31 @@ def multihead_attention(queries, keys, values, key_masks,
     return outputs
 
 def ff(inputs, num_units, scope="positionwise_feedforward"):
-    '''position-wise feed forward net. See 3.3
-
-    inputs: A 3d tensor with shape of [N, T, C].
-    num_units: A list of two integers.
-    scope: Optional scope for `variable_scope`.
-    Returns:
-      A 3d tensor with the same shape and dtype as inputs
-    '''
+    ...
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         # Inner layer
-        outputs = tf.layers.dense(inputs, num_units[0], activation=tf.nn.relu)
+        outputs = dense(
+            inputs,
+            units=num_units[0],
+            use_bias=True,
+            activation=tf.nn.relu,
+            scope="ff_inner",
+        )
 
         # Outer layer
-        outputs = tf.layers.dense(outputs, num_units[1])
+        outputs = dense(
+            outputs,
+            units=num_units[1],
+            use_bias=True,
+            activation=None,
+            scope="ff_outer",
+        )
 
-        # Residual connection
         outputs += inputs
-
-        # Normalize
         outputs = ln(outputs)
 
     return outputs
+
 
 def label_smoothing(inputs, epsilon=0.1):
     '''Applies label smoothing. See 5.4 and https://arxiv.org/abs/1512.00567.
@@ -278,7 +355,7 @@ def positional_encoding(inputs,
         if masking:
             outputs = tf.where(tf.equal(inputs, 0), inputs, outputs)
 
-        return tf.to_float(outputs)
+        return tf.cast(outputs, tf.float32)
 
 def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     '''Noam scheme learning rate decay

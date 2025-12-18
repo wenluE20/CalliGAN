@@ -1,12 +1,66 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 from __future__ import absolute_import
-import tensorflow as tf  # pyright: ignore[reportMissingImports]
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+
 
 
 def batch_norm(x, is_training, epsilon=1e-5, decay=0.9, scope="batch_norm"):
-    return tf.contrib.layers.batch_norm(x, decay=decay, updates_collections=None, epsilon=epsilon,
-                                        scale=True, is_training=is_training, scope=scope)
+    """
+    手写版 BatchNorm，不依赖 tf.layers / keras。
+    训练时使用 batch mean/var 并更新 moving_mean / moving_var；
+    测试时使用 moving_mean / moving_var。
+    同时兼容 is_training 是 Python bool 或 tf.bool 张量两种情况。
+    """
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        # 通道维度
+        params_shape = x.get_shape()[-1:]
+
+        beta = tf.get_variable(
+            'beta', params_shape,
+            initializer=tf.constant_initializer(0.0))
+        gamma = tf.get_variable(
+            'gamma', params_shape,
+            initializer=tf.constant_initializer(1.0))
+
+        moving_mean = tf.get_variable(
+            'moving_mean', params_shape,
+            initializer=tf.zeros_initializer(),
+            trainable=False)
+        moving_var = tf.get_variable(
+            'moving_var', params_shape,
+            initializer=tf.ones_initializer(),
+            trainable=False)
+
+        # 除通道外的所有维度
+        axes = list(range(len(x.get_shape()) - 1))
+        batch_mean, batch_var = tf.nn.moments(x, axes, name='moments')
+
+        def train_bn():
+            # 更新滑动平均
+            update_mean = tf.assign(
+                moving_mean, moving_mean * decay + batch_mean * (1.0 - decay))
+            update_var = tf.assign(
+                moving_var, moving_var * decay + batch_var * (1.0 - decay))
+            with tf.control_dependencies([update_mean, update_var]):
+                return tf.nn.batch_normalization(
+                    x, batch_mean, batch_var, beta, gamma, epsilon)
+
+        def infer_bn():
+            return tf.nn.batch_normalization(
+                x, moving_mean, moving_var, beta, gamma, epsilon)
+
+        # 兼容 Python bool 和张量两种情况
+        if isinstance(is_training, bool):
+            # 纯 Python 分支（你现在就是这种调用方式）
+            return train_bn() if is_training else infer_bn()
+        else:
+            # 图中布尔张量，用 tf.cond 动态选择
+            cond_pred = is_training
+            if cond_pred.dtype is not tf.bool:
+                cond_pred = tf.cast(cond_pred, tf.bool)
+            return tf.cond(cond_pred, train_bn, infer_bn)
 
 
 def conv2d(x, output_filters, kh=5, kw=5, sh=2, sw=2, stddev=0.02, scope="conv2d"):

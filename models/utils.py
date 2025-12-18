@@ -4,7 +4,7 @@ from __future__ import absolute_import
 
 from PIL import Image
 import numpy as np
-from io import StringIO
+from io import BytesIO
 
 
 def pad_seq(seq, batch_size):
@@ -18,7 +18,7 @@ def pad_seq(seq, batch_size):
 
 
 def bytes_to_file(bytes_img):
-    return StringIO(bytes_img)
+    return BytesIO(bytes_img)
 
 
 def normalize_image(img):

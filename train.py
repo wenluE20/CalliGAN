@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 from __future__ import absolute_import
-import tensorflow as tf
-import models.parser
+
+# 启用TensorFlow 1.x兼容模式
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+from models import parser
 from models.unet_onehot_cns_font_attention import UNet
 
 def main(_):
@@ -25,6 +28,7 @@ def main(_):
         if args.fine_tune:
             ids = args.fine_tune.split(",")
             fine_tune_list = set([int(i) for i in ids])
+
         model.train(lr=args.lr, epoch=args.epoch, resume=args.resume,
                     schedule=args.schedule, freeze_encoder=args.freeze_encoder, fine_tune=fine_tune_list,
                     sample_steps=args.sample_steps, flip_labels=args.flip_labels)
